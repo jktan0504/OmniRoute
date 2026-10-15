@@ -10,7 +10,7 @@ import {
   createDefaultClaudeCacheControl,
 } from "../helpers/claudeHelper.ts";
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.ts";
-import { restoreClaudeThinkingBlocks } from "../../services/claudeThinkingStore.ts";
+import { restoreClaudeThinkingContent } from "../../services/claudeThinkingStore.ts";
 import {
   getDefaultThinkingBudget,
   isAdaptiveThinkingOnly,
@@ -784,13 +784,14 @@ function getContentBlocksFromMessage(
       hasToolUseBlock &&
       !hasThinkingBlock
     ) {
-      const restored = restoreClaudeThinkingBlocks({
+      const restored = restoreClaudeThinkingContent({
         toolUseIds: blocks.filter((b) => b.type === "tool_use").map((b) => b.id),
         provider: thinkingBinding.provider,
         model: thinkingBinding.model,
+        content: blocks,
       });
       if (restored) {
-        blocks.unshift(...restored);
+        blocks.splice(0, blocks.length, ...restored);
         hasThinkingBlock = true;
       }
     }

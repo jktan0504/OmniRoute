@@ -32,6 +32,7 @@ type Entry = {
   provider: string;
   model: string;
   blocks: ClaudeSignedThinkingBlock[];
+  layout?: Record<string, unknown>[];
   size: number;
   expiresAt: number;
 };
@@ -122,6 +123,7 @@ export function storeClaudeThinkingBlocks(args: {
   blocks: unknown;
   provider: unknown;
   model: unknown;
+  content?: Record<string, unknown>[];
 }): boolean {
   const toolUseIds = collectToolUseIds(args.toolUseIds);
   const model = normalizeClaudeThinkingModel(args.model);
@@ -131,7 +133,18 @@ export function storeClaudeThinkingBlocks(args: {
   const blocks = args.blocks.map(normalizeBlock);
   if (!blocks.every(Boolean)) return false;
   const normalizedBlocks = blocks as ClaudeSignedThinkingBlock[];
-  const size = normalizedBlocks.reduce((sum, block) => sum + blockSize(block), 0);
+  const layout = args.content?.map((block) => {
+    if (block.type === "tool_use" && typeof block.id === "string")
+      return { type: "tool_use", id: block.id };
+    if (block.type === "text" && typeof block.text === "string")
+      return { type: "text", text: block.text };
+    return normalizeBlock(block);
+  });
+  const validLayout = layout?.every((block) => block !== null) ? layout : undefined;
+  if (layout && !validLayout) return false;
+  const size =
+    normalizedBlocks.reduce((sum, block) => sum + blockSize(block), 0) +
+    (validLayout ? JSON.stringify(validLayout).length : 0);
   if (size > MAX_CLAUDE_THINKING_ENTRY_CHARS) return false;
 
   const now = Date.now();
@@ -142,6 +155,7 @@ export function storeClaudeThinkingBlocks(args: {
       provider,
       model,
       blocks: cloneBlocks(normalizedBlocks),
+      layout: validLayout as Record<string, unknown>[] | undefined,
       size,
       expiresAt: now + CLAUDE_THINKING_MEMORY_TTL_MS,
     });
@@ -177,7 +191,42 @@ export function storeClaudeThinkingFromResponse(
     blocks,
     provider: binding.provider,
     model: typeof root.model === "string" && root.model ? root.model : binding.model,
+    content: root.content as Record<string, unknown>[],
   });
+}
+
+/** Restore the signed turn's layout only when its text and tool identities still match. */
+export function restoreClaudeThinkingContent(args: {
+  toolUseIds: unknown;
+  provider: unknown;
+  model: unknown;
+  content: Record<string, unknown>[];
+}): Record<string, unknown>[] | null {
+  const blocks = restoreClaudeThinkingBlocks(args);
+  if (!blocks) return null;
+  const entry = collectToolUseIds(args.toolUseIds)
+    .map((id) => entries.get(id))
+    .find(Boolean);
+  if (!entry?.layout) return [...blocks, ...args.content];
+  const layout = entry.layout;
+  const tools = args.content.filter((block) => block.type === "tool_use");
+  const expectedTools = layout.filter((block) => block.type === "tool_use");
+  if (
+    tools.length !== expectedTools.length ||
+    tools.some((tool, i) => tool.id !== expectedTools[i].id)
+  )
+    return null;
+  const text = (content: Record<string, unknown>[]) =>
+    content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+  if (text(args.content) !== text(layout)) return null;
+  if (args.content.some((block) => block.type !== "text" && block.type !== "tool_use")) return null;
+  let toolIndex = 0;
+  return layout.map((block) =>
+    block.type === "tool_use" ? { ...tools[toolIndex++] } : { ...block }
+  );
 }
 
 /**
