@@ -179,7 +179,16 @@ export function fixToolUseOrdering(messages: ClaudeMessage[]): ClaudeMessage[] {
   for (const msg of messages) {
     if (msg.role === "assistant" && Array.isArray(msg.content)) {
       const hasToolUse = msg.content.some((b) => b.type === "tool_use");
-      if (hasToolUse) {
+      // Signed turns can interleave text and tools; removing text changes their replay layout.
+      const hasSignedThinking = msg.content.some(
+        (b) =>
+          (b.type === "thinking" && typeof b.signature === "string" && b.signature.length > 0) ||
+          (b.type === "redacted_thinking" &&
+            typeof b.data === "string" &&
+            b.data.length > 0 &&
+            b.data !== DEFAULT_THINKING_CLAUDE_SIGNATURE)
+      );
+      if (hasToolUse && !hasSignedThinking) {
         // Keep only: thinking blocks + tool_use blocks (remove text blocks after tool_use)
         const newContent: ClaudeContentBlock[] = [];
         let foundToolUse = false;
