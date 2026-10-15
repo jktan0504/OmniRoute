@@ -55,6 +55,9 @@ function flushThinkingContinuity(state) {
     blocks: [...blocks.entries()].sort(([left], [right]) => left - right).map(([, b]) => b),
     provider: state.provider,
     model: state.model,
+    content: [...blocks.entries(), ...(state.claudeReplayContent?.entries() ?? [])]
+      .sort(([left], [right]) => left - right)
+      .map(([, block]) => block),
   });
 }
 
@@ -119,6 +122,13 @@ export function claudeToOpenAIResponse(chunk, state) {
 
     case "content_block_start": {
       const block = chunk.content_block;
+      state.claudeReplayContent ??= new Map();
+      if (block?.type === "text")
+        state.claudeReplayContent.set(chunk.index, { type: "text", text: block.text ?? "" });
+      else if (block?.type === "tool_use")
+        state.claudeReplayContent.set(chunk.index, { type: "tool_use", id: block.id });
+      else if (block && block.type !== "thinking" && block.type !== "redacted_thinking")
+        state.claudeReplayContent.set(chunk.index, { type: block.type });
       if (block?.type === "text") {
         state.textBlockStarted = true;
       } else if (block?.type === "thinking") {
@@ -157,6 +167,8 @@ export function claudeToOpenAIResponse(chunk, state) {
     case "content_block_delta": {
       const delta = chunk.delta;
       if (delta?.type === "text_delta" && delta.text) {
+        const replayText = state.claudeReplayContent?.get(chunk.index);
+        if (replayText?.type === "text") replayText.text += delta.text;
         // Flush the deferred </think> close marker before the first text delta so
         // clients like Claude Code / Cursor (that scan content for </think>) see it
         // immediately before the assistant reply begins — but NOT in tool-use streams
