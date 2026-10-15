@@ -509,3 +509,133 @@ test("forgetClaudeThinkingForClientResponse drops entries for Chat and Responses
   });
   assert.equal(store.getClaudeThinkingStoreSizeForTests(), 0);
 });
+
+for (const format of [FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES]) {
+  test(`${format}: interleaved signed thinking keeps its position around text and tools`, () => {
+    const original: Block[] = [
+      { type: "thinking", thinking: "first", signature: "first-signature" },
+      { type: "text", text: "before" },
+      { type: "tool_use", id: "toolu_first", name: "read_file", input: {} },
+      { type: "thinking", thinking: "second", signature: "second-signature" },
+      { type: "text", text: "after" },
+      { type: "tool_use", id: "toolu_second", name: "read_file", input: {} },
+    ];
+    const state: Record<string, unknown> = {
+      ...(initState(format) as Record<string, unknown>),
+      provider: "claude",
+      toolNameMap: new Map(),
+    };
+    const events: Block[] = [
+      { type: "message_start", message: { id: "msg_interleaved", model: MODEL, usage: {} } },
+      ...original.flatMap((block, index) => [
+        { type: "content_block_start", index, content_block: block },
+        { type: "content_block_stop", index },
+      ]),
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} },
+      { type: "message_stop" },
+    ];
+    for (const event of events) translateResponse(FORMATS.CLAUDE, format, event, state);
+    translateResponse(FORMATS.CLAUDE, format, null, state);
+    const calls = ["first", "second"].map((id) => ({
+      id: `toolu_${id}`,
+      type: "function",
+      function: { name: "read_file", arguments: "{}" },
+    }));
+    const chat = {
+      model: MODEL,
+      reasoning_effort: "high",
+      messages: [
+        { role: "user", content: "test" },
+        { role: "assistant", content: "beforeafter", tool_calls: calls },
+        ...calls.map((call) => ({ role: "tool", tool_call_id: call.id, content: "OK" })),
+      ],
+    };
+    const responses = {
+      model: MODEL,
+      reasoning: { effort: "high" },
+      input: [
+        { role: "user", content: "test" },
+        { role: "assistant", content: [{ type: "output_text", text: "beforeafter" }] },
+        ...calls.map((call) => ({
+          type: "function_call",
+          call_id: call.id,
+          name: "read_file",
+          arguments: "{}",
+        })),
+        ...calls.map((call) => ({ type: "function_call_output", call_id: call.id, output: "OK" })),
+      ],
+    };
+    const result = translateRequest(
+      format,
+      FORMATS.CLAUDE,
+      MODEL,
+      format === FORMATS.OPENAI ? chat : responses,
+      true,
+      null,
+      "claude"
+    ) as { messages: ClaudeMessage[] };
+    assert.deepEqual(
+      assistantTurn(result).content.map(stripCacheControl),
+      original.map((b) => (b.type === "tool_use" ? { ...b, name: "proxy_read_file" } : b))
+    );
+  });
+}
+
+test("non-streaming layout restores exact text boundaries and keeps client tool arguments", () => {
+  const original = [
+    { type: "text", text: "before" },
+    { type: "thinking", thinking: THINKING_TEXT, signature: SIGNATURE },
+    { type: "tool_use", id: "toolu_layout", name: "read_file", input: {} },
+    { type: "text", text: "after" },
+  ];
+  store.storeClaudeThinkingFromResponse(
+    { model: MODEL, content: original },
+    { provider: "claude", model: MODEL }
+  );
+  const args = {
+    toolUseIds: ["toolu_layout"],
+    provider: "claude",
+    model: MODEL,
+    content: [
+      { type: "text", text: "beforeafter" },
+      { type: "tool_use", id: "toolu_layout", name: "read_file", input: { path: "new.ts" } },
+    ],
+  };
+  assert.deepEqual(
+    store.restoreClaudeThinkingContent(args),
+    original.map((b) => (b.type === "tool_use" ? { ...b, input: { path: "new.ts" } } : b))
+  );
+  assert.equal(
+    store.restoreClaudeThinkingContent({
+      ...args,
+      content: [{ type: "text", text: "changed" }, args.content[1]],
+    }),
+    null
+  );
+  assert.equal(
+    store.restoreClaudeThinkingContent({
+      ...args,
+      content: [args.content[0], { ...args.content[1], id: "different" }],
+    }),
+    null
+  );
+  assert.equal(store.restoreClaudeThinkingContent({ ...args, model: "different-model" }), null);
+});
+
+test("unsupported content is not retained as a partial signed layout", () => {
+  assert.equal(
+    store.storeClaudeThinkingFromResponse(
+      {
+        model: MODEL,
+        content: [
+          { type: "thinking", thinking: THINKING_TEXT, signature: SIGNATURE },
+          { type: "image", source: {} },
+          { type: "tool_use", id: "toolu_unsupported", name: "read_file", input: {} },
+        ],
+      },
+      { provider: "claude", model: MODEL }
+    ),
+    false
+  );
+  assert.equal(store.getClaudeThinkingStoreSizeForTests(), 0);
+});
