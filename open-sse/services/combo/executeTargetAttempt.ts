@@ -84,6 +84,10 @@ import {
 } from "./validateQuality.ts";
 import { isTrustedEmptyTurn } from "./emptyTurnTrust.ts";
 import {
+  isTruncatedComboAttempt,
+  recordTruncatedStreamAttempt,
+} from "./truncatedStreamFailover.ts";
+import {
   isQuotaExhaustionResponse,
   recordQuotaExhaustionClassification,
 } from "./quotaExhaustion.ts";
@@ -360,6 +364,19 @@ export async function executeTargetAttempt(
 
     // Success — validate response quality before returning
     if (result.ok) {
+      // #18460 follow-up — a cut buffered stream is a retryable attempt failure.
+      if (isTruncatedComboAttempt(result, deps, protectedPriorityTarget)) {
+        recordTruncatedStreamAttempt({
+          result,
+          modelStr,
+          provider,
+          targetIndex: i,
+          target,
+          state,
+          deps,
+        });
+        return null;
+      }
       const selectedConnectionId =
         result.headers?.get("X-OmniRoute-Selected-Connection-Id") ||
         result.headers?.get("x-omniroute-selected-connection-id") ||
