@@ -58,6 +58,7 @@ function flushThinkingContinuity(state) {
     content: [...blocks.entries(), ...(state.claudeReplayContent?.entries() ?? [])]
       .sort(([left], [right]) => left - right)
       .map(([, block]) => block),
+    connectionId: state.connectionId,
   });
 }
 
