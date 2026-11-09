@@ -31,6 +31,9 @@ export type ClaudeSignedThinkingBlock =
 /** The signed blocks Claude emitted between the turn's previous tool_use and `toolUseId`. */
 export type ClaudeThinkingSegment = { toolUseId: string; blocks: ClaudeSignedThinkingBlock[] };
 
+type ClaudeReplayBlock =
+  ClaudeSignedThinkingBlock | { type: "text"; text: string } | { type: "tool_use"; id: string };
+
 type Entry = {
   provider: string;
   model: string;
@@ -38,6 +41,7 @@ type Entry = {
    *  produced by one OAuth org must never be replayed on another (#17324). */
   connectionId: string;
   segments: ClaudeThinkingSegment[];
+  layout: ClaudeReplayBlock[];
   size: number;
   expiresAt: number;
 };
@@ -174,7 +178,23 @@ export function storeClaudeThinkingBlocks(args: {
 
   const collected = collectThinkingSegments(args.content);
   if (!collected) return false;
-  const { segments, size } = collected;
+  const { segments } = collected;
+  const layout: ClaudeReplayBlock[] = [];
+  const toolIds = new Set<string>();
+  for (const block of args.content) {
+    const record = block as Record<string, unknown> | null;
+    const signed = normalizeBlock(block);
+    if (signed) layout.push(signed);
+    else if (record?.type === "text" && typeof record.text === "string") {
+      layout.push({ type: "text", text: record.text });
+    } else if (record?.type === "tool_use" && typeof record.id === "string" && record.id) {
+      if (toolIds.has(record.id)) return false;
+      toolIds.add(record.id);
+      layout.push({ type: "tool_use", id: record.id });
+    } else return false;
+  }
+  const size = collected.size + JSON.stringify(layout).length;
+  if (size > MAX_CLAUDE_THINKING_ENTRY_CHARS) return false;
 
   const now = Date.now();
   const provider = normalizeProvider(args.provider);
@@ -191,6 +211,7 @@ export function storeClaudeThinkingBlocks(args: {
       model,
       connectionId,
       segments: cloneSegments(segments),
+      layout: layout.map((block) => ({ ...block })),
       size,
       expiresAt: now + CLAUDE_THINKING_MEMORY_TTL_MS,
     });
@@ -251,6 +272,41 @@ export function restoreClaudeThinkingBlocks(args: {
     return markRestored(cloneSegments(entry.segments));
   }
   return null;
+}
+
+/** Restore text boundaries only when the client returns the complete, unchanged turn. */
+export function restoreClaudeThinkingContent(args: {
+  toolUseIds: unknown;
+  provider: unknown;
+  model: unknown;
+  connectionId?: unknown;
+  content: unknown;
+}): Record<string, unknown>[] | null {
+  if (!Array.isArray(args.content) || !restoreClaudeThinkingBlocks(args)) return null;
+  const content = args.content as Record<string, unknown>[];
+  if (content.some((block) => !block || (block.type !== "text" && block.type !== "tool_use")))
+    return null;
+  const tools = content.filter((block) => block.type === "tool_use");
+  const ids = tools.map((block) => block.id);
+  if (new Set(ids).size !== ids.length) return null;
+  const entry = entries.get(ids[0] as string);
+  if (!entry) return null;
+  const storedIds = entry.layout
+    .filter((block) => block.type === "tool_use")
+    .map((block) => block.id);
+  if (JSON.stringify(ids) !== JSON.stringify(storedIds)) return null;
+  const textOf = (blocks: Record<string, unknown>[]) =>
+    blocks
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+  if (textOf(content) !== textOf(entry.layout)) return null;
+  return entry.layout.map((block) => {
+    if (block.type === "tool_use") return { ...tools.find((tool) => tool.id === block.id)! };
+    const copy = { ...block };
+    if (block.type === "thinking" || block.type === "redacted_thinking") restoredBlocks.add(copy);
+    return copy;
+  });
 }
 
 /** Tag every block of freshly cloned segments as restored-by-binding provenance. */

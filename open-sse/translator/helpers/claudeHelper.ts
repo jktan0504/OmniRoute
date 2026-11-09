@@ -258,7 +258,7 @@ export function fixToolUseOrdering(messages: ClaudeMessage[]): ClaudeMessage[] {
   for (const msg of messages) {
     if (msg.role === "assistant" && Array.isArray(msg.content)) {
       const hasToolUse = msg.content.some((b) => b.type === "tool_use");
-      if (hasToolUse) {
+      if (hasToolUse && !msg.content.some(isRestoredClaudeThinkingBlock)) {
         // Keep only: thinking blocks + tool_use blocks (remove text blocks after tool_use)
         const newContent: ClaudeContentBlock[] = [];
         let foundToolUse = false;

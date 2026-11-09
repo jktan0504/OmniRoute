@@ -10,7 +10,10 @@ import {
   createClaudeTailCacheControl,
   createDefaultClaudeCacheControl,
 } from "../helpers/claudeHelper.ts";
-import { restoreClaudeThinkingBlocks } from "../../services/claudeThinkingStore.ts";
+import {
+  restoreClaudeThinkingBlocks,
+  restoreClaudeThinkingContent,
+} from "../../services/claudeThinkingStore.ts";
 import {
   getDefaultThinkingBudget,
   isAdaptiveThinkingOnly,
@@ -884,6 +887,14 @@ function getContentBlocksFromMessage(
       !hasThinkingBlock &&
       !hasAmbiguousToolUseId
     ) {
+      const binding = {
+        toolUseIds: ownToolUseIds,
+        provider: thinkingBinding.provider,
+        model: thinkingBinding.model,
+        connectionId: thinkingBinding.connectionId,
+      };
+      const layout = restoreClaudeThinkingContent({ ...binding, content: blocks });
+      if (layout) return layout;
       const restored = restoreClaudeThinkingBlocks({
         toolUseIds: ownToolUseIds,
         provider: thinkingBinding.provider,

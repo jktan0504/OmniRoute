@@ -106,7 +106,8 @@ export function downgradeUnrequestedLossy(
     return {
       ...plan,
       mode: "stacked",
-      stackedPipeline: kept.length > 0 ? kept : [...SAFE_DEFAULT_PIPELINE],
+      stackedPipeline:
+        kept.length > 0 ? kept.map(withoutToolResultTruncation) : [...SAFE_DEFAULT_PIPELINE],
     };
   }
 

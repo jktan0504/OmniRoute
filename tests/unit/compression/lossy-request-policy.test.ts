@@ -126,7 +126,11 @@ test("lossy single mode retains the configured safe subset", () => {
     configured
   );
   assert.equal(plan.mode, "stacked");
-  assert.deepEqual(plan.stackedPipeline, [configured[0], configured[2], configured[3]]);
+  assert.deepEqual(plan.stackedPipeline, [
+    configured[0],
+    { ...configured[2], config: { compressToolResults: false, preserveToolWhitespace: true } },
+    configured[3],
+  ]);
 });
 
 test("lossy single mode uses the historical fallback when no safe configured step survives", () => {

@@ -1,7 +1,10 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { initThinkState, applyThinkTag, flushThinkBuffer } from "../../utils/thinkTagParser.ts";
-import { storeClaudeThinkingBlocks } from "../../services/claudeThinkingStore.ts";
+import {
+  storeClaudeThinkingBlocks,
+  MAX_CLAUDE_THINKING_ENTRY_CHARS,
+} from "../../services/claudeThinkingStore.ts";
 
 type OpenAIUsage = {
   prompt_tokens: number;
@@ -45,6 +48,24 @@ function thinkingBlocksOf(state): Map<number, Record<string, string>> {
   return state.claudeThinkingBlocks;
 }
 
+function captureReplayBlock(state, index, block: Record<string, string>) {
+  if (state.claudeReplayDisabled || !(state.claudeReplayContent instanceof Map)) return;
+  const previous = state.claudeReplayContent.get(index);
+  const size = JSON.stringify(block).length + 32;
+  const total =
+    (state.claudeReplayChars ?? 0) + size - (previous ? JSON.stringify(previous).length + 32 : 0);
+  if (
+    total > MAX_CLAUDE_THINKING_ENTRY_CHARS ||
+    (!previous && state.claudeReplayContent.size >= 1000)
+  ) {
+    state.claudeReplayContent.clear();
+    state.claudeReplayDisabled = true;
+    return;
+  }
+  state.claudeReplayChars = total;
+  state.claudeReplayContent.set(index, block);
+}
+
 function flushThinkingContinuity(state) {
   if (state.claudeThinkingFlushed) return;
   state.claudeThinkingFlushed = true;
@@ -52,6 +73,7 @@ function flushThinkingContinuity(state) {
   if (blocks.size === 0 || !(state.toolCalls instanceof Map) || state.toolCalls.size === 0) return;
   const indexed: Array<[number, Record<string, unknown>]> = [
     ...blocks.entries(),
+    ...(state.claudeReplayContent?.entries() ?? []),
     ...[...state.toolCalls.entries()].map(
       ([index, toolCall]): [number, Record<string, unknown>] => [
         index,
@@ -80,6 +102,9 @@ export function claudeToOpenAIResponse(chunk, state) {
       state.model = chunk.message?.model;
       state.toolCallIndex = 0;
       state.claudeThinkingBlocks = new Map();
+      state.claudeReplayContent = new Map();
+      state.claudeReplayDisabled = false;
+      state.claudeReplayChars = 0;
       state.claudeThinkingFlushed = false;
       // #13558: MiniMax-M3's Anthropic-compatible endpoint puts its reasoning
       // inline as <think>...</think> inside ordinary text/text_delta blocks
@@ -130,6 +155,10 @@ export function claudeToOpenAIResponse(chunk, state) {
       const block = chunk.content_block;
       if (block?.type === "text") {
         state.textBlockStarted = true;
+        captureReplayBlock(state, chunk.index, {
+          type: "text",
+          text: typeof block.text === "string" ? block.text : "",
+        });
       } else if (block?.type === "thinking") {
         thinkingBlocksOf(state).set(chunk.index, {
           type: "thinking",
@@ -159,6 +188,9 @@ export function claudeToOpenAIResponse(chunk, state) {
         };
         state.toolCalls.set(chunk.index, toolCall);
         results.push(createChunk(state, { tool_calls: [toolCall] }));
+      } else if (block) {
+        // Unknown content makes exact replay unsafe; retain only a rejection marker.
+        captureReplayBlock(state, chunk.index, { type: "unsupported" });
       }
       break;
     }
@@ -166,6 +198,12 @@ export function claudeToOpenAIResponse(chunk, state) {
     case "content_block_delta": {
       const delta = chunk.delta;
       if (delta?.type === "text_delta" && delta.text) {
+        const trackedText = state.claudeReplayContent?.get(chunk.index);
+        if (trackedText?.type === "text")
+          captureReplayBlock(state, chunk.index, {
+            type: "text",
+            text: trackedText.text + delta.text,
+          });
         // Flush the deferred </think> close marker before the first text delta so
         // clients like Claude Code / Cursor (that scan content for </think>) see it
         // immediately before the assistant reply begins — but NOT in tool-use streams
